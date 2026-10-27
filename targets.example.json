@@ -1,0 +1,8 @@
+{
+  "targets": [
+    {"retailer": "walmart", "query": "clearance tools", "pages": 2},
+    {"retailer": "walmart", "query": "rollback power tools", "pages": 2},
+    {"retailer": "lowes", "query": "clearance", "pages": 3},
+    {"retailer": "lowes", "query": "dewalt"}
+  ]
+}

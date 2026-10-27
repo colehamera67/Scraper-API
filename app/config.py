@@ -23,6 +23,13 @@ class Settings:
     cache_ttl: float = field(default_factory=lambda: _float("SCRAPER_CACHE_TTL", 900))
     # Lowe's prices are per store; set a store number to get that store's pricing.
     lowes_store_id: str | None = field(default_factory=lambda: os.environ.get("LOWES_STORE_ID") or None)
+    # Price history database. Every scraped, parsed or imported product is recorded here.
+    db_path: str = field(default_factory=lambda: os.environ.get("SCRAPER_DB", "data/prices.db"))
+    record_history: bool = field(
+        default_factory=lambda: os.environ.get("SCRAPER_RECORD_HISTORY", "1").lower() not in ("0", "false", "no")
+    )
+    # An observation identical to the previous one is skipped if it's newer than this many seconds.
+    min_record_interval: float = field(default_factory=lambda: _float("SCRAPER_MIN_RECORD_INTERVAL", 1800))
 
 
 settings = Settings()

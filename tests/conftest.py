@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 
 import httpx
@@ -6,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.fetcher import Fetcher
+from app.history import PriceStore
 from app.main import app
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -28,8 +30,9 @@ def route(request: httpx.Request) -> httpx.Response:
     return httpx.Response(404)
 
 
-def make_client(handler=route) -> TestClient:
+def make_client(handler=route, store: PriceStore | None = None) -> TestClient:
     app.state.fetcher = Fetcher(Settings(min_interval=0, cache_ttl=0), transport=httpx.MockTransport(handler))
+    app.state.store = store or PriceStore(Path(tempfile.mkdtemp()) / "prices.db")
     return TestClient(app)
 
 
@@ -37,3 +40,10 @@ def make_client(handler=route) -> TestClient:
 def client():
     with make_client() as c:
         yield c
+
+
+@pytest.fixture
+def store(tmp_path):
+    s = PriceStore(tmp_path / "prices.db")
+    yield s
+    s.close()

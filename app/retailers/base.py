@@ -5,6 +5,7 @@ import re
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from typing import Any
+from urllib.parse import urlparse
 
 from ..models import Product, Retailer
 
@@ -81,6 +82,13 @@ def extract_script_json(html: str, script_id: str) -> Any:
 class RetailerScraper(ABC):
     retailer: Retailer
     base_url: str
+    domain: str
+
+    def owns_url(self, url: str) -> bool:
+        """True for https links on this retailer's domain (guards against fetching arbitrary URLs)."""
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        return parsed.scheme == "https" and (host == self.domain or host.endswith("." + self.domain))
 
     def cookies(self) -> dict[str, str] | None:
         return None

@@ -54,3 +54,43 @@ def test_blocked_is_reported_per_retailer():
         assert body["count"] == 3
         assert "BlockedError" in body["errors"]["walmart"]
         assert c.get("/product/walmart", params={"id": "1"}).status_code == 503
+
+
+def test_scraped_products_are_recorded_and_history_endpoint(client):
+    client.get("/search", params={"q": "drill"})
+    assert client.get("/health").json()["history"]["products"] == 6
+    body = client.get("/history/walmart/111").json()
+    assert body["product"]["title"] == "DEWALT 20V Drill Kit"
+    assert [o["price"] for o in body["observations"]] == [99.0]
+    assert client.get("/history/walmart/nope").status_code == 404
+
+
+def test_ingest_feed_then_drops():
+    from datetime import timedelta
+
+    from app.history import PriceStore, utcnow
+    from app.models import Product, Retailer
+    import tempfile, pathlib
+
+    store = PriceStore(pathlib.Path(tempfile.mkdtemp()) / "p.db")
+    now = utcnow()
+    for d, price in enumerate([200, 210, 190]):
+        store.record([Product(retailer=Retailer.lowes, product_id="L1", title="Mower", current_price=price)],
+                     "seed", observed_at=now - timedelta(days=3 - d))
+    with make_client(store=store) as c:
+        r = c.post("/ingest/feed?retailer=lowes&source=vendor", content="id,name,price\nL1,Mower,120\n,bad,1\n",
+                   headers={"Content-Type": "text/csv"})
+        assert r.json() == {"products": 1, "observations_recorded": 1, "errors": {"line 3": "row is missing a product id or title"}}
+        drops = c.get("/drops").json()
+        assert drops["count"] == 1
+        assert drops["drops"][0]["median_price"] == 200 and drops["drops"][0]["drop_vs_median_pct"] == 40.0
+        assert c.get("/drops", params={"retailer": "walmart"}).json()["count"] == 0
+        hist = c.get("/history/lowes/L1").json()
+        assert hist["observations"][-1]["source"] == "feed:vendor" and "below_median" in hist["analysis"]["signals"]
+
+
+def test_ingest_scrape(client):
+    r = client.post("/ingest/scrape", json=[{"retailer": "walmart", "query": "drill"},
+                                            {"retailer": "lowes", "url": "https://www.lowes.com/pd/x/5001"}])
+    assert r.json()["products"] == 4 and r.json()["observations_recorded"] == 4
+    assert client.post("/ingest/scrape", json=[{"retailer": "lowes", "url": "https://evil.example/"}]).status_code == 422

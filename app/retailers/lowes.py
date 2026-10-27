@@ -49,6 +49,7 @@ def _in_stock(entry: dict) -> bool | None:
 class LowesScraper(RetailerScraper):
     retailer = Retailer.lowes
     base_url = "https://www.lowes.com"
+    domain = "lowes.com"
     page_size = 24
 
     def cookies(self) -> dict[str, str] | None:
