@@ -79,13 +79,16 @@ def test_concurrency_and_interval_limits():
     f = Fetcher(settings(**access), transport=httpx.MockTransport(handler))
 
     async def run():
+        t0 = time.monotonic()
         await asyncio.gather(*(f.get(f"https://www.walmart.com/ip/{i}", use_cache=False) for i in range(9)))
         await f.aclose()
+        return t0
 
-    asyncio.run(run())
+    t0 = asyncio.run(run())
     assert peak == 3
-    gaps = [b - a for a, b in zip(starts, starts[1:])]
-    assert min(gaps) >= 0.009
+    # Request k may not start before k intervals have passed (individual gaps jitter with scheduling).
+    for k, started in enumerate(sorted(starts)):
+        assert started - t0 >= k * 0.01
 
 
 def test_cache_is_bounded():
