@@ -3,6 +3,7 @@
     python -m app.cli ingest-feed walmart_feed.csv --retailer walmart --source walmart-affiliate
     python -m app.cli scrape targets.json
     python -m app.cli drops --min-drop 25 --limit 20
+    python -m app.cli deals --flag bogo --min-discount 30
     python -m app.cli discover walmart
     python -m app.cli crawl walmart --max-minutes 60
     python -m app.cli crawl-status
@@ -14,10 +15,12 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 from .config import settings
 from .crawler import CrawlError, CrawlQueue, crawl, discover
+from .deals import find_deals
 from .drops import find_drops
 from .fetcher import Fetcher
 from .history import PriceStore
@@ -92,6 +95,35 @@ def cmd_drops(args) -> int:
         )
     if not found:
         print("no drops found")
+    return 0
+
+
+def _deal_line(d) -> str:
+    offer = d.offers[0].text if d.offers else ""
+    was = f"was ${d.was_price:,.2f}" if d.was_price else ""
+    return (
+        f"{d.deal_score:6.1f}  {d.retailer.value:7}  ${d.current_price or 0:>9.2f}  {was:16}  "
+        f"{(d.best_discount_pct or 0):5.1f}% off  {','.join(d.flags):28}  {offer[:40]:40}  {d.title[:50]}  {d.url or ''}"
+    )
+
+
+def cmd_deals(args) -> int:
+    store = _store()
+    products = store.latest(
+        retailer=Retailer(args.retailer) if args.retailer else None, seen_within=timedelta(hours=args.seen_within_hours)
+    )
+    store.close()
+    found = find_deals(
+        products, min_discount=args.min_discount, max_price=args.max_price,
+        in_stock_only=args.in_stock_only, required_flags=args.flag,
+    )[: args.limit]
+    if args.json:
+        print(json.dumps([d.model_dump(mode="json") for d in found], indent=2))
+    else:
+        for d in found:
+            print(_deal_line(d))
+        if not found:
+            print("no deals found")
     return 0
 
 
@@ -186,6 +218,17 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_drops)
 
     retailers = [r.value for r in Retailer]
+    p = sub.add_parser("deals", help="best current deals (markdowns, clearance, BOGO, multi-buy) from recorded data")
+    p.add_argument("--retailer", choices=retailers)
+    p.add_argument("--min-discount", type=float, default=20, help="minimum %% off, markdown or per-unit offer")
+    p.add_argument("--flag", action="append", default=[], help="require a flag: clearance, rollback, bogo, multi_buy, ...")
+    p.add_argument("--max-price", type=float)
+    p.add_argument("--in-stock-only", action="store_true")
+    p.add_argument("--seen-within-hours", type=float, default=48)
+    p.add_argument("--limit", type=int, default=50)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_deals)
+
     p = sub.add_parser("discover", help="find every product URL in a retailer's sitemaps and queue it")
     p.add_argument("retailer", choices=retailers)
     p.add_argument("--sitemap", action="append", default=[], help="sitemap URL (repeatable); default: config or robots.txt")

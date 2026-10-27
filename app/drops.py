@@ -7,9 +7,11 @@ from statistics import median
 from pydantic import BaseModel
 
 from .history import Observation, PriceStore, TrackedProduct, utcnow
-from .models import Retailer
+from .models import Offer, Retailer
 
-DEAL_FLAGS = ("clearance", "rollback", "flash_deal", "special_buy", "reduced_price")
+DEAL_FLAGS = ("clearance", "rollback", "flash_deal", "special_buy", "reduced_price", "bogo", "multi_buy", "free_gift")
+# Signals that on their own make a product worth reporting.
+DROP_SIGNALS = {"below_median", "price_cut", "new_clearance", "new_bogo", "new_multi_buy"}
 # A new low has to beat the previous low by at least this fraction to count.
 LOW_THRESHOLD = 0.01
 
@@ -25,6 +27,7 @@ class PriceAnalysis(BaseModel):
     observed_at: datetime
     in_stock: bool | None = None
     flags: list[str] = []
+    offers: list[Offer] = []
     was_price: float | None = None
     previous_price: float | None = None
     median_price: float | None = None
@@ -63,6 +66,7 @@ def analyze(
         observed_at=latest.observed_at,
         in_stock=latest.in_stock,
         flags=latest.flags,
+        offers=latest.offers,
         was_price=latest.was_price,
     )
     if not prior:
@@ -88,7 +92,8 @@ def analyze(
         a.signals.append("new_low")
     a.signals += [f"new_{f}" for f in a.new_flags]
 
-    pct = max(a.drop_vs_median_pct or 0, a.drop_vs_previous_pct or 0, 0)
+    offer_pct = max((o.effective_discount_pct or 0 for o in latest.offers), default=0)
+    pct = max(a.drop_vs_median_pct or 0, a.drop_vs_previous_pct or 0, offer_pct if a.new_flags else 0, 0)
     dollars = max((a.median_price or 0) - latest.price, (a.previous_price or 0) - latest.price, 0)
     bonus = (10 if a.new_low else 0) + (10 if "clearance" in a.new_flags else 0)
     a.drop_score = round(pct + min(dollars / 10, 20) + bonus, 2)
@@ -96,7 +101,7 @@ def analyze(
 
 
 def is_drop(a: PriceAnalysis) -> bool:
-    return bool({"below_median", "price_cut", "new_clearance"} & set(a.signals))
+    return bool(DROP_SIGNALS & set(a.signals))
 
 
 def find_drops(

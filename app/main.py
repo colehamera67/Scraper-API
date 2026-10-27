@@ -19,6 +19,14 @@ from .retailers import SCRAPERS, ParseError
 from .sources import FeedError, Target, parse_feed, scrape_targets
 
 RetailerChoice = Literal["all", "walmart", "lowes"]
+MinDiscount = Annotated[
+    float, Query(ge=0, le=100, description="Minimum % off: markdown vs was-price, or a multi-buy offer's per-unit discount")
+]
+MinSavings = Annotated[float, Query(ge=0, description="Minimum $ saved per unit")]
+DealFlags = Annotated[
+    list[str],
+    Query(description="Only items with any of these: clearance, rollback, reduced_price, bogo, multi_buy, free_gift"),
+]
 
 
 @asynccontextmanager
@@ -126,13 +134,11 @@ async def deals(
     q: Annotated[list[str], Query(min_length=1, description="One or more search terms (repeat ?q=)")],
     retailer: RetailerChoice = "all",
     pages: Annotated[int, Query(ge=1, le=5, description="Result pages to scan per query")] = 1,
-    min_discount: Annotated[float, Query(ge=0, le=100, description="Minimum % off")] = 20,
-    min_savings: Annotated[float, Query(ge=0, description="Minimum $ off")] = 0,
+    min_discount: MinDiscount = 20,
+    min_savings: MinSavings = 0,
     max_price: Annotated[float | None, Query(gt=0)] = None,
     in_stock_only: bool = False,
-    flag: Annotated[
-        list[str], Query(description="Only items with these badges: clearance, rollback, reduced_price, ...")
-    ] = [],
+    flag: DealFlags = [],
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> DealsResponse:
     """Search one or more terms and return items discounted against the retailer's was-price, best first."""
@@ -147,6 +153,29 @@ async def deals(
         required_flags=flag,
     )[:limit]
     return DealsResponse(queries=q, count=len(found), deals=found, errors=errors)
+
+
+@app.get("/deals/current", response_model=DealsResponse)
+def current_deals(
+    request: Request,
+    retailer: RetailerChoice = "all",
+    seen_within_hours: Annotated[float, Query(gt=0, description="Only products observed this recently")] = 48,
+    min_discount: MinDiscount = 20,
+    min_savings: MinSavings = 0,
+    max_price: Annotated[float | None, Query(gt=0)] = None,
+    in_stock_only: bool = False,
+    flag: DealFlags = [],
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+) -> DealsResponse:
+    """Best deals among everything recorded recently (scheduled scans, feeds, earlier searches). No fetching."""
+    products = request.app.state.store.latest(
+        retailer=None if retailer == "all" else Retailer(retailer), seen_within=timedelta(hours=seen_within_hours)
+    )
+    found = find_deals(
+        products, min_discount=min_discount, min_savings=min_savings, max_price=max_price,
+        in_stock_only=in_stock_only, required_flags=flag,
+    )[:limit]
+    return DealsResponse(queries=[], count=len(found), deals=found)
 
 
 @app.get("/product/{retailer}", response_model=Product)
@@ -250,7 +279,8 @@ def drops(
     max_price: Annotated[float | None, Query(gt=0)] = None,
     in_stock_only: bool = False,
     signal: Annotated[
-        list[str], Query(description="Require any of: below_median, price_cut, new_low, new_clearance, new_rollback")
+        list[str],
+        Query(description="Require any of: below_median, price_cut, new_low, new_clearance, new_bogo, new_multi_buy"),
     ] = [],
     limit: Annotated[int, Query(ge=1, le=1000)] = 100,
 ) -> DropsResponse:

@@ -6,6 +6,7 @@ from urllib.parse import quote_plus, urljoin
 
 from ..config import settings
 from ..models import Product, Retailer
+from ..promotions import promo_texts, with_offers
 from .base import ParseError, RetailerScraper, extract_json_assignment, first, to_float, to_int, walk
 
 CURRENT_PRICE_KEYS = ("sellingPrice", "finalPrice", "currentPrice", "salePrice", "price")
@@ -118,7 +119,7 @@ class LowesScraper(RetailerScraper):
             image = first(image, "value", "url")
         url = first(info, "pdURL", "pdUrl", "url")
 
-        return Product(
+        product = Product(
             retailer=self.retailer,
             product_id=str(item_id),
             title=str(title).strip(),
@@ -132,3 +133,4 @@ class LowesScraper(RetailerScraper):
             review_count=to_int(first(info, "reviewCount", "totalReviews") or first(entry, "reviewCount", "totalReviews")),
             flags=sorted(flags),
         )
+        return with_offers(product, promo_texts(entry))

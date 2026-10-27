@@ -1,7 +1,8 @@
 # Retail Deals Scraper API
 
-A FastAPI service that searches **Walmart** and **Lowe's**, normalizes the results, and surfaces
-major discounts (rollbacks, clearance, price cuts), ranked by a deal score.
+A FastAPI service that finds **major discounts at Walmart and Lowe's**: markdowns, clearance,
+rollbacks, and multi-buy promotions (Buy 1 Get 1, Buy 1 Get 2, Buy 2 Get 1 50% off, "3 for $10",
+"Buy 2 save $10"), all ranked together by their effective discount.
 
 It also keeps a **price history** of every product it sees (from scraping, parsed pages, or imported
 data feeds) and flags **real price drops**: prices well below what that product has actually sold for,
@@ -16,11 +17,61 @@ uvicorn app.main:app --reload
 pytest
 ```
 
+## Deal-hunting workflow
+
+1. List the deal-heavy searches and pages to watch in a targets file. Start from
+   `targets.example.json` (clearance, rollback, BOGO and special-value searches).
+2. Scan them on a schedule. Everything found is recorded with its price and promotions:
+   ```bash
+   python -m app.cli scrape targets.json
+   ```
+3. List the best current deals, or only what's new since the last scan:
+   ```bash
+   python -m app.cli deals --min-discount 30            # markdowns, clearance, BOGO, multi-buy
+   python -m app.cli deals --flag bogo                  # only Buy X Get Y offers
+   python -m app.cli drops                              # real price drops and newly started promotions
+   ```
+   The same results are available from `GET /deals/current` and `GET /drops`.
+
+Example cron schedule, scanning every 4 hours:
+
+```cron
+10 */4 * * *  cd /srv/scraper-api && python -m app.cli scrape targets.json
+40 */4 * * *  cd /srv/scraper-api && python -m app.cli drops --json > /srv/deals/new.json
+```
+
+## Multi-buy promotions
+
+Promotion text found anywhere in a product's page data is turned into a structured offer with an
+**effective discount per unit**, assuming you buy the minimum quantity:
+
+| Promotion | Kind | Effective discount |
+|---|---|---|
+| Buy 1 Get 1 Free / BOGO | `buy_x_get_y` | 50% (buy 2) |
+| Buy 1 Get 2 Free | `buy_x_get_y` | 66.7% (buy 3) |
+| Buy 2 Get 1 Free | `buy_x_get_y` | 33.3% (buy 3) |
+| Buy 1 Get 1 50% Off / BOGO half off | `buy_x_get_y` | 25% (buy 2) |
+| Buy 1 Get 1 for $1 ($10 item) | `buy_x_get_y` | 45% (buy 2) |
+| 3 for $10 ($5 item) | `multi_for_price` | 33.3% (buy 3); needs the unit price |
+| Buy 2 or more, save 10% | `qty_percent_off` | 10% |
+| Buy 2, save $10 ($25 item) | `qty_dollar_off` | 20% (buy 2) |
+| Buy a drill, get a free battery | `free_gift` | not computed; the free item is a different product |
+
+Each product has `offers` (kind, quantities, original `text`, `min_qty`, `effective_discount_pct`),
+flags `bogo`, `multi_buy` or `free_gift`, and `best_discount_pct`: the larger of the markdown and the
+best offer. `min_discount` and the deal score use `best_discount_pct`, so a $20 BOGO item (50%) ranks
+alongside a 50%-off markdown.
+
+"Buy 1 Get 1" with no qualifier is read as the second item free, which is how retailers use the
+phrase. A product's own name and description are not searched for offers, so a title like "Value Pack 3
+for $10" isn't mistaken for a promotion.
+
 ## Endpoints
 
 | Method | Path | What it does |
 |---|---|---|
-| GET | `/deals?q=drill&q=mower` | Searches each term on each retailer and returns only discounted items, best first |
+| GET | `/deals?q=drill&q=mower` | Searches each term live on each retailer and returns only deals, best first |
+| GET | `/deals/current` | Best deals among everything recorded recently (no fetching). Same filters as `/deals` plus `seen_within_hours` |
 | GET | `/search?q=drill&retailer=lowes` | All products for a term, discounted or not |
 | GET | `/product/{walmart\|lowes}?id=...` or `?url=...` | One product page |
 | POST | `/parse/{walmart\|lowes}` | Parse HTML you send (body = raw page HTML, `Content-Type: text/html`) |
@@ -33,20 +84,21 @@ pytest
 ### `/deals` filters
 
 - `retailer`: `all` (default), `walmart`, or `lowes`
-- `min_discount`: minimum % off (default `20`)
-- `min_savings`: minimum $ off
+- `min_discount`: minimum % off (default `20`): markdown vs was-price, or the best offer's per-unit discount
+- `min_savings`: minimum $ saved per unit
 - `max_price`: highest current price to include
 - `in_stock_only`: drop items marked out of stock
-- `flag`: only items with these badges (repeatable): `clearance`, `rollback`, `reduced_price`, `special_buy`, `flash_deal`.
-  An item with one of these badges is included even when the page shows no was-price.
+- `flag`: only items with any of these (repeatable): `clearance`, `rollback`, `reduced_price`, `special_buy`,
+  `flash_deal`, `bogo`, `multi_buy`, `free_gift`. A flagged item whose discount can't be computed (for example,
+  clearance with no was-price shown) is still included; otherwise `min_discount` applies.
 - `pages`: result pages to scan per term (1–5)
 - `limit`: maximum number of results
 
 Example: `GET /deals?q=dewalt&q=pressure%20washer&min_discount=40&flag=clearance&in_stock_only=true`
 
-Each deal has `current_price`, `was_price`, `savings`, `discount_pct`, `flags`, `in_stock`, `rating`,
-`url`, and `deal_score` (= % off + min($ saved / 10, 20) + badge bonus: clearance +10, flash deal +7,
-rollback/special buy +5).
+Each deal has `current_price`, `was_price`, `savings`, `discount_pct`, `offers`, `best_discount_pct`,
+`flags`, `in_stock`, `rating`, `url`, and `deal_score` (= best % off + min($ saved per unit / 10, 20) +
+badge bonus: clearance +10, flash deal +7, rollback/special buy +5).
 
 Partial failures don't fail the request: if one retailer blocks or errors, the other's results are still
 returned and the problem shows up under `errors`.
@@ -65,14 +117,16 @@ signals:
 | `below_median` | At least `min_drop_pct` (default 20%) below the product's median daily price. Needs `min_history_days` (default 3) of history |
 | `price_cut` | At least `min_drop_pct` below the previous observation |
 | `new_low` | More than 1% below the lowest recorded price. Needs `min_history_days` of history |
-| `new_clearance`, `new_rollback`, ... | The deal badge appeared since the previous observation |
+| `new_clearance`, `new_rollback`, `new_bogo`, `new_multi_buy`, ... | The badge or promotion appeared since the previous observation |
 
-A product counts as a drop when it has `below_median`, `price_cut` or `new_clearance`. `new_low` raises the
+A product counts as a drop when it has `below_median`, `price_cut`, `new_clearance`, `new_bogo` or
+`new_multi_buy`. `new_low` raises the
 score. The median uses one closing price per day, so checking a product ten times on one day doesn't
 outweigh the other days. Only products observed in the last `seen_within_hours` (default 48) are included,
 so you don't get stale results.
 
-`drop_score` = the larger of % below median and % below previous price, + min($ drop / 10, 20),
+`drop_score` = the largest of % below median, % below previous price, and (for a newly started
+promotion) the offer's effective discount, + min($ drop / 10, 20),
 +10 for a new low, +10 for newly marked clearance.
 
 Other `/drops` filters: `retailer`, `max_price`, `in_stock_only`, `signal` (repeatable), `lookback_days`,
@@ -96,6 +150,7 @@ Column names are matched flexibly, case-insensitively, with spaces treated as un
 | title | `name`, `title`, `product_name` |
 | price | `price`, `sale_price`, `salePrice`, `selling_price` |
 | was price | `msrp`, `list_price`, `was_price`, `regular_price`, `retail_price` |
+| promotion | `promotion`, `promo`, `offer`, `deal` (separate several with `\|`) |
 | other | `url`/`link`, `brand`, `image_url`, `availability`/`in_stock`, `rating`, `review_count`, `badges`/`flags`, `retailer` |
 
 Bad rows are reported and skipped; they don't stop the import. To support another feed's column names,
@@ -133,9 +188,10 @@ On a single machine, importing a 200,000-product feed takes about 15 seconds, an
 For tens of millions, move the store to Postgres. `PriceStore` is the only module that touches the
 database.
 
-## Full-catalog crawling
+## Full-catalog crawling (optional)
 
-Crawling has two steps, and both are resumable:
+Not needed for deal hunting; the targeted scans above cover the pages where deals are listed. Use this
+only if you want price history for every product. Crawling has two steps, and both are resumable:
 
 ```bash
 python -m app.cli discover walmart --filter ip     # sitemaps -> every product URL, saved in the database

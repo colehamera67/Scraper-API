@@ -10,7 +10,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from .models import Product, Retailer
+from .models import Offer, Product, Retailer
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS products (
@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS observations (
     was_price    REAL,
     in_stock     INTEGER,
     flags        TEXT NOT NULL DEFAULT '[]',
-    source       TEXT NOT NULL
+    source       TEXT NOT NULL,
+    offers       TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS obs_product_time ON observations (retailer, product_id, observed_at);
 CREATE INDEX IF NOT EXISTS products_last_seen ON products (last_seen);
@@ -60,6 +61,7 @@ class Observation(BaseModel):
     was_price: float | None = None
     in_stock: bool | None = None
     flags: list[str] = []
+    offers: list[Offer] = []
     source: str
 
 
@@ -84,6 +86,9 @@ class PriceStore:
         self._db = sqlite3.connect(self.path, check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(SCHEMA)
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(observations)")}
+        if "offers" not in columns:  # databases created before offers were stored
+            self._db.execute("ALTER TABLE observations ADD COLUMN offers TEXT NOT NULL DEFAULT '[]'")
         self._db.row_factory = sqlite3.Row
         self._lock = threading.Lock()
         self.min_record_interval = min_record_interval
@@ -127,22 +132,25 @@ class PriceStore:
                     continue
                 in_stock = None if p.in_stock is None else int(p.in_stock)
                 flags = json.dumps(sorted(p.flags))
+                offers = json.dumps([o.model_dump(exclude_none=True) for o in p.offers])
                 last = self._db.execute(
-                    """SELECT observed_at, price, was_price, in_stock, flags FROM observations
+                    """SELECT observed_at, price, was_price, in_stock, flags, offers FROM observations
                        WHERE retailer = ? AND product_id = ? AND observed_at <= ?
                        ORDER BY observed_at DESC LIMIT 1""",
                     (*key, ts),
                 ).fetchone()
                 if (
                     last
-                    and (last["price"], last["was_price"], last["in_stock"], last["flags"])
-                    == (p.current_price, p.was_price, in_stock, flags)
+                    and (last["price"], last["was_price"], last["in_stock"], last["flags"], last["offers"])
+                    == (p.current_price, p.was_price, in_stock, flags, offers)
                     and (from_ts(ts) - from_ts(last["observed_at"])).total_seconds() < self.min_record_interval
                 ):
                     continue
                 self._db.execute(
-                    "INSERT INTO observations VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (*key, ts, p.current_price, p.was_price, in_stock, flags, source),
+                    """INSERT INTO observations
+                         (retailer, product_id, observed_at, price, was_price, in_stock, flags, offers, source)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (*key, ts, p.current_price, p.was_price, in_stock, flags, offers, source),
                 )
                 written += 1
         return written
@@ -181,7 +189,7 @@ class PriceStore:
             params.append(to_ts(now - seen_within))
         query = f"""
             SELECT p.retailer, p.product_id, p.title, p.url, p.brand, p.image_url, p.first_seen, p.last_seen,
-                   o.observed_at, o.price, o.was_price, o.in_stock, o.flags, o.source
+                   o.observed_at, o.price, o.was_price, o.in_stock, o.flags, o.offers, o.source
             FROM products p JOIN observations o
               ON o.retailer = p.retailer AND o.product_id = p.product_id AND o.observed_at >= ?
             WHERE 1 = 1 {where}
@@ -201,6 +209,32 @@ class PriceStore:
             series.append(_observation(row))
         if current:
             yield current, series
+
+    def latest(self, *, retailer: Retailer | None = None, seen_within: timedelta = timedelta(hours=48)) -> list[Product]:
+        """Each product's most recent observation (within `seen_within`), as a Product with its offers."""
+        params: list = [to_ts(utcnow() - seen_within)]
+        where = ""
+        if retailer:
+            where = " AND o.retailer = ?"
+            params.append(retailer.value)
+        query = f"""
+            SELECT p.retailer, p.product_id, p.title, p.url, p.brand, p.image_url,
+                   o.price, o.was_price, o.in_stock, o.flags, o.offers
+            FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY retailer, product_id ORDER BY observed_at DESC) AS rn
+                  FROM observations WHERE observed_at >= ?) o
+            JOIN products p ON p.retailer = o.retailer AND p.product_id = o.product_id
+            WHERE o.rn = 1 {where}"""
+        with self._reader() as db:
+            rows = db.execute(query, params).fetchall()
+        return [
+            Product(
+                retailer=Retailer(r["retailer"]), product_id=r["product_id"], title=r["title"], url=r["url"],
+                brand=r["brand"], image_url=r["image_url"], current_price=r["price"], was_price=r["was_price"],
+                in_stock=None if r["in_stock"] is None else bool(r["in_stock"]),
+                flags=json.loads(r["flags"]), offers=json.loads(r["offers"]),
+            )
+            for r in rows
+        ]
 
     def stats(self) -> dict:
         with self._reader() as db:
@@ -229,5 +263,6 @@ def _observation(row: sqlite3.Row) -> Observation:
         was_price=row["was_price"],
         in_stock=None if row["in_stock"] is None else bool(row["in_stock"]),
         flags=json.loads(row["flags"]),
+        offers=json.loads(row["offers"]),
         source=row["source"],
     )

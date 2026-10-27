@@ -1,8 +1,11 @@
 {
   "targets": [
-    {"retailer": "walmart", "query": "clearance tools", "pages": 2},
-    {"retailer": "walmart", "query": "rollback power tools", "pages": 2},
-    {"retailer": "lowes", "query": "clearance", "pages": 3},
-    {"retailer": "lowes", "query": "dewalt"}
+    {"retailer": "walmart", "query": "clearance", "pages": 5},
+    {"retailer": "walmart", "query": "rollback", "pages": 5},
+    {"retailer": "walmart", "query": "buy one get one", "pages": 2},
+    {"retailer": "lowes", "query": "clearance", "pages": 5},
+    {"retailer": "lowes", "query": "buy 1 get 1", "pages": 2},
+    {"retailer": "lowes", "query": "special values", "pages": 3},
+    {"retailer": "lowes", "query": "power tool deals", "pages": 2}
   ]
 }

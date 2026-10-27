@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
 from typing import Any
 from urllib.parse import urlparse
 
+from ..jsonutil import walk  # noqa: F401  (re-exported for retailer modules)
 from ..models import Product, Retailer
 
 
@@ -40,18 +40,6 @@ def first(d: dict, *keys: str) -> Any:
         if d.get(k) not in (None, ""):
             return d[k]
     return None
-
-
-def walk(obj: Any) -> Iterator[dict]:
-    """Yield every dict nested anywhere inside obj."""
-    stack = [obj]
-    while stack:
-        cur = stack.pop()
-        if isinstance(cur, dict):
-            yield cur
-            stack.extend(cur.values())
-        elif isinstance(cur, list):
-            stack.extend(cur)
 
 
 def extract_json_assignment(html: str, marker: str) -> Any:

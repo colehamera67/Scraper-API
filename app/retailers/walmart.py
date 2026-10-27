@@ -5,6 +5,7 @@ from typing import Any
 from urllib.parse import quote_plus, urljoin
 
 from ..models import Product, Retailer
+from ..promotions import promo_texts, with_offers
 from .base import ParseError, RetailerScraper, extract_script_json, first, to_float, to_int, walk
 
 # Walmart badge / display-code names normalised to our flag vocabulary.
@@ -97,7 +98,7 @@ class WalmartScraper(RetailerScraper):
         image = (n.get("imageInfo") or {}).get("thumbnailUrl") or n.get("image")
         url = n.get("canonicalUrl")
 
-        return Product(
+        product = Product(
             retailer=self.retailer,
             product_id=str(item_id),
             title=n.get("name", "").strip(),
@@ -111,3 +112,4 @@ class WalmartScraper(RetailerScraper):
             review_count=to_int(n.get("numberOfReviews")),
             flags=sorted(flags),
         )
+        return with_offers(product, promo_texts(n))

@@ -5,12 +5,22 @@ from collections.abc import Iterable
 from .models import Deal, Product
 
 FLAG_BONUS = {"clearance": 10.0, "flash_deal": 7.0, "rollback": 5.0, "special_buy": 5.0, "reduced_price": 0.0}
+COMPUTED_FIELDS = {"savings", "discount_pct", "best_discount_pct"}
+
+
+def unit_savings(p: Product) -> float:
+    """Dollars saved per unit, from the markdown or the best offer, whichever is larger."""
+    if p.current_price is None:
+        return 0.0
+    markdown = p.savings or 0.0
+    best_offer = max((o.effective_discount_pct or 0.0 for o in p.offers), default=0.0)
+    return max(markdown, p.current_price * best_offer / 100)
 
 
 def deal_score(p: Product) -> float:
-    """Discount % dominates; absolute savings and retailer deal badges break ties."""
-    pct = p.discount_pct or 0.0
-    savings_bonus = min((p.savings or 0.0) / 10, 20.0)
+    """Best % off (markdown or multi-buy offer) dominates; dollars saved and deal badges break ties."""
+    pct = p.best_discount_pct or 0.0
+    savings_bonus = min(unit_savings(p) / 10, 20.0)
     flag_bonus = max((FLAG_BONUS.get(f, 0.0) for f in p.flags), default=0.0)
     return round(pct + savings_bonus + flag_bonus, 2)
 
@@ -32,10 +42,12 @@ def find_deals(
         if key in seen:
             continue
         seen.add(key)
-        # Products flagged clearance etc. without a visible was-price still count when flags are requested.
-        if (p.discount_pct or 0.0) < min_discount and not (required and required & set(p.flags)):
+        # A requested badge (e.g. clearance) on an item whose discount can't be computed still counts;
+        # when the discount is known, min_discount applies.
+        flagged_unknown = bool(required & set(p.flags)) and p.best_discount_pct is None
+        if (p.best_discount_pct or 0.0) < min_discount and not flagged_unknown:
             continue
-        if (p.savings or 0.0) < min_savings:
+        if unit_savings(p) < min_savings:
             continue
         if max_price is not None and (p.current_price is None or p.current_price > max_price):
             continue
@@ -43,6 +55,6 @@ def find_deals(
             continue
         if required and not required & set(p.flags):
             continue
-        deals.append(Deal(**p.model_dump(exclude={"savings", "discount_pct"}), deal_score=deal_score(p)))
+        deals.append(Deal(**p.model_dump(exclude=COMPUTED_FIELDS), deal_score=deal_score(p)))
     deals.sort(key=lambda d: d.deal_score, reverse=True)
     return deals

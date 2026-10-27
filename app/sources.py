@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .fetcher import Fetcher, FetchError
 from .models import Product, Retailer
+from .promotions import with_offers
 from .retailers import SCRAPERS, ParseError
 from .retailers.base import to_float, to_int
 
@@ -31,6 +32,7 @@ FEED_COLUMNS = {
     "rating": ("rating", "average_rating", "customer_rating"),
     "review_count": ("review_count", "reviews", "num_reviews", "number_of_reviews"),
     "flags": ("flags", "badges", "deal_type"),
+    "promotion": ("promotion", "promotions", "promo", "promo_text", "offer", "offers", "special_offer", "deal"),
     "retailer": ("retailer", "store", "merchant"),
 }
 IN_STOCK_WORDS = {"1", "true", "yes", "y", "in stock", "instock", "in_stock", "available", "limited stock"}
@@ -87,7 +89,7 @@ def row_to_product(row: dict, default_retailer: Retailer | None = None) -> Produ
     if product_id is None or title is None:
         raise FeedError("row is missing a product id or title")
     current, was = to_float(_lookup(row, "current_price")), to_float(_lookup(row, "was_price"))
-    return Product(
+    product = Product(
         retailer=_retailer(_lookup(row, "retailer"), default_retailer),
         product_id=str(product_id).strip(),
         title=str(title).strip(),
@@ -101,6 +103,9 @@ def row_to_product(row: dict, default_retailer: Retailer | None = None) -> Produ
         review_count=to_int(_lookup(row, "review_count")),
         flags=_flags(_lookup(row, "flags")),
     )
+    promo = _lookup(row, "promotion")
+    texts = promo if isinstance(promo, list) else str(promo).split("|") if promo else []
+    return with_offers(product, [str(t) for t in texts])
 
 
 def parse_feed(
