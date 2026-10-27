@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import quote_plus, urljoin
 
@@ -50,6 +51,7 @@ class LowesScraper(RetailerScraper):
     retailer = Retailer.lowes
     base_url = "https://www.lowes.com"
     domain = "lowes.com"
+    product_url_re = re.compile(r"^/pd/(?:[^/]+/)?(\d+)/?$")
     page_size = 24
 
     def cookies(self) -> dict[str, str] | None:

@@ -30,6 +30,7 @@ class WalmartScraper(RetailerScraper):
     retailer = Retailer.walmart
     base_url = "https://www.walmart.com"
     domain = "walmart.com"
+    product_url_re = re.compile(r"^/ip/(?:[^/]+/)?(\d+)/?$")
 
     def search_url(self, query: str, page: int = 1) -> str:
         url = f"{self.base_url}/search?q={quote_plus(query)}"

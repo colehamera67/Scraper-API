@@ -9,6 +9,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from .config import settings
+from .crawler import CrawlQueue
 from .deals import find_deals
 from .drops import PriceAnalysis, analyze, find_drops
 from .fetcher import BlockedError, Fetcher, FetchError
@@ -78,6 +79,16 @@ async def _gather(
         else:
             products.extend(res)
     return products, errors
+
+
+@app.get("/crawl/status")
+def crawl_status(request: Request) -> dict:
+    """Catalog coverage per retailer: known product URLs, how many were crawled in the last 24h, etc."""
+    queue = CrawlQueue(request.app.state.store.path)
+    try:
+        return queue.status()
+    finally:
+        queue.close()
 
 
 @app.get("/health")

@@ -110,6 +110,9 @@ python -m app.cli scrape targets.json
 
 The same blocking limits described below apply here.
 
+**Full-catalog crawling.** This covers every product, not just deal pages. See
+[Full-catalog crawling](#full-catalog-crawling) below.
+
 ### Scheduling
 
 Run imports and scrapes on a schedule, for example with cron:
@@ -130,11 +133,64 @@ On a single machine, importing a 200,000-product feed takes about 15 seconds, an
 For tens of millions, move the store to Postgres. `PriceStore` is the only module that touches the
 database.
 
+## Full-catalog crawling
+
+Crawling has two steps, and both are resumable:
+
+```bash
+python -m app.cli discover walmart --filter ip     # sitemaps -> every product URL, saved in the database
+python -m app.cli crawl walmart --max-minutes 55    # visit product pages, record prices
+python -m app.cli crawl-status                      # coverage: known URLs, crawled in last 24h, retired
+```
+
+- **discover** reads the retailer's sitemaps (the lists of pages a site publishes for crawlers), found
+  through robots.txt, `WALMART_SITEMAPS`/`LOWES_SITEMAPS`, or `--sitemap URL`. It follows sitemap indexes
+  and gzip files and keeps only product page URLs (`/ip/...` on Walmart, `/pd/...` on Lowe's).
+  `--filter` follows only child sitemaps whose URL contains that text, for example the product
+  sitemaps. Re-run it daily to pick up new products; already-known URLs are skipped.
+- **crawl** visits never-crawled URLs first, then the ones crawled longest ago. Running it repeatedly
+  works through the whole catalog, then starts over. Each run stops at `--max-pages`, `--max-minutes`, an
+  empty queue, or after `SCRAPER_CRAWL_BLOCK_LIMIT` (default 20) blocked responses in a row. Blocked pages
+  aren't retried with any workaround; they stay first in line for the next run. A URL that fails 3 times
+  (removed product, unparseable page, disallowed by robots.txt) is retired.
+- Every product crawled goes into the price history, so `/drops` covers the whole catalog.
+
+How often each product gets refreshed depends on your speed settings:
+`pages per day ≈ 86,400 / interval`, with enough concurrency to keep that pace. For example,
+`WALMART_MIN_INTERVAL=0.05` and `WALMART_CONCURRENCY=10` is about 1.7M pages a day. Raise these only as far
+as the retailer has approved. Unapproved traffic at these speeds gets blocked quickly.
+
+Example schedule that runs back-to-back hourly crawl passes:
+
+```cron
+5 3 * * *   cd /srv/scraper-api && python -m app.cli discover walmart --filter ip && python -m app.cli discover lowes
+0 * * * *   cd /srv/scraper-api && python -m app.cli crawl walmart --max-minutes 55
+0 * * * *   cd /srv/scraper-api && python -m app.cli crawl lowes --max-minutes 55
+```
+
+## Approved access
+
+If a retailer has approved your traffic, configure it per retailer with the env vars below. Use the
+`WALMART_` or `LOWES_` prefix:
+
+| Var | Example | Purpose |
+|---|---|---|
+| `<RETAILER>_HEADERS` | `{"X-Partner-Token": "..."}` | Extra headers on every request to that retailer (API keys, partner tokens) |
+| `<RETAILER>_COOKIES` | `{"session": "..."}` | Cookies on every request to that retailer |
+| `<RETAILER>_PROXY_URL` | `http://user:pass@10.0.0.5:3128` | Fixed outbound proxy, for example the static IP the retailer allowlisted |
+| `<RETAILER>_MIN_INTERVAL` | `0.1` | Seconds between request starts (default: `SCRAPER_MIN_INTERVAL`) |
+| `<RETAILER>_CONCURRENCY` | `10` | Requests in flight at once (default 1) |
+| `<RETAILER>_SITEMAPS` | `https://www.walmart.com/sitemap_ip.xml` | Comma-separated sitemap URLs for `discover` |
+
+Headers and cookies are only sent to their own retailer's domain. Ask your contact at each retailer which
+method they use (an allowlisted IP, a token, a header). Without it, both sites block automated traffic,
+whatever the speed settings.
+
 ## Configuration (env vars)
 
 | Var | Default | Purpose |
 |---|---|---|
-| `SCRAPER_MIN_INTERVAL` | `2` | Minimum seconds between requests to the same site |
+| `SCRAPER_MIN_INTERVAL` | `2` | Default seconds between request starts to the same site |
 | `SCRAPER_CACHE_TTL` | `900` | Seconds to cache a fetched page |
 | `SCRAPER_TIMEOUT` | `20` | Request timeout in seconds |
 | `SCRAPER_USER_AGENT` | Chrome UA | User-Agent header |
@@ -143,6 +199,8 @@ database.
 | `SCRAPER_DB` | `data/prices.db` | Price history database path |
 | `SCRAPER_RECORD_HISTORY` | `1` | Set to `0` to stop `/search`, `/deals`, etc. from recording history |
 | `SCRAPER_MIN_RECORD_INTERVAL` | `1800` | Seconds within which an identical repeat observation is skipped |
+| `SCRAPER_RESPECT_ROBOTS` | `1` | Skip pages robots.txt disallows. Set to `0` only if the retailer told you to ignore it |
+| `SCRAPER_CRAWL_BLOCK_LIMIT` | `20` | Stop a crawl or discovery run after this many blocked responses in a row |
 
 ## How it works
 

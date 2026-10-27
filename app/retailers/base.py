@@ -83,6 +83,15 @@ class RetailerScraper(ABC):
     retailer: Retailer
     base_url: str
     domain: str
+    # Matches a product page URL; group 1 is the product id.
+    product_url_re: re.Pattern
+
+    def is_product_url(self, url: str) -> bool:
+        return self.owns_url(url) and bool(self.product_url_re.search(urlparse(url).path))
+
+    def product_id_from_url(self, url: str) -> str | None:
+        m = self.product_url_re.search(urlparse(url).path)
+        return m.group(1) if m else None
 
     def owns_url(self, url: str) -> bool:
         """True for https links on this retailer's domain (guards against fetching arbitrary URLs)."""
